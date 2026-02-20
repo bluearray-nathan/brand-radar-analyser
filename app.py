@@ -91,4 +91,153 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
     
     For each brand mentioned, extract:
     A. Sentiment: (Positive, Neutral, Negative, or Not Mentioned)
-    B. Attributes: Extract up to {max_attrs} short
+    B. Attributes: Extract up to {max_attrs} short labels (max 2 words each) summarizing their key pros/cons, separated by commas. 
+    {tag_logic}
+    If no specific attributes are mentioned, output 'N/A'.
+    
+    1. Check the client '{target_client}'.
+    2. Check the following competitors:
+{comp_prompts}
+    
+    Response text: "{text}"
+    
+    Return ONLY in this exact pipe-separated format:
+    {format_str}
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return " | ".join(["Error | Error"] * (1 + len(comp_list)))
+
+# 4. File Uploader & Execution
+uploaded_file = st.sidebar.file_uploader("Upload Brand Radar CSV", type="csv")
+st.sidebar.divider()
+sample_mode = st.sidebar.checkbox("Sample Mode (Analyze first 5 rows only)", value=True)
+
+if uploaded_file is None:
+    st.session_state.output_df = None
+    st.session_state.suggested_tags = None
+
+if uploaded_file and client_name:
+    df = pd.read_csv(uploaded_file)
+    
+    if 'AI Overview' not in df.columns or 'Link URL' not in df.columns:
+        st.error("CSV must contain columns: 'AI Overview' and 'Link URL'")
+    else:
+        country_col = df.columns[0]
+        unique_countries = ["All"] + sorted(df[country_col].dropna().astype(str).str.lower().unique().tolist())
+        
+        st.markdown("### Filter Data")
+        selected_country = st.selectbox(f"Select Country (Filtering by '{country_col}')", options=unique_countries)
+        
+        if selected_country != "All":
+            df = df[df[country_col].astype(str).str.lower() == selected_country]
+            
+        st.info(f"Rows ready to process: {len(df)}")
+        
+        if len(df) > 0:
+            if st.button("💡 Suggest Tags from Data"):
+                with st.spinner("Scanning data for common themes..."):
+                    comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
+                    sample_df = df.head(15)
+                    st.session_state.suggested_tags = suggest_tags(sample_df, client_name, comp_list)
+            
+            if st.session_state.suggested_tags:
+                st.success("Here are the most common themes found in the data. Copy and paste your favorites into the 'Preferred Attribute Tags' box above!")
+                st.code(st.session_state.suggested_tags, language="text")
+
+        st.divider()
+
+        if st.button(f"🚀 Run Audit for {client_name}"):
+            if len(df) == 0:
+                st.warning("No data left to process after filtering.")
+            else:
+                process_df = df.head(5).copy() if sample_mode else df.copy()
+                comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                parsed_results = []
+                
+                # Processing Loop
+                for i, row in enumerate(process_df['AI Overview']):
+                    raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes)
+                    
+                    parts = [p.strip() for p in raw_output.split("|")]
+                    row_dict = {
+                        f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown",
+                        f"{client_name} Attributes": parts[1] if len(parts) > 1 else "N/A"
+                    }
+                    
+                    for idx, comp in enumerate(comp_list):
+                        base_idx = 2 + (idx * 2)
+                        row_dict[f"{comp} Sentiment"] = parts[base_idx] if base_idx < len(parts) else "Unknown"
+                        row_dict[f"{comp} Attributes"] = parts[base_idx + 1] if (base_idx + 1) < len(parts) else "N/A"
+                        
+                    parsed_results.append(row_dict)
+                    
+                    pct = int((i + 1) / len(process_df) * 100)
+                    progress_bar.progress(pct)
+                    status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
+
+                results_df = pd.DataFrame(parsed_results)
+                base_df = process_df.reset_index(drop=True)
+                st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
+                
+                st.success("Audit complete! Visualizations and data below:")
+
+        # --- Display Results & Charts ---
+        if st.session_state.output_df is not None:
+            # Render Charts
+            st.markdown(f"### 📊 Visualizing {client_name} Data")
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                # Sentiment Bar Chart
+                sentiment_col = f"{client_name} Sentiment"
+                sent_counts = st.session_state.output_df[sentiment_col].value_counts().reset_index()
+                sent_counts.columns = ['Sentiment', 'Mentions']
+                fig_sent = px.bar(sent_counts, x='Sentiment', y='Mentions', title="Sentiment Distribution",
+                                  color='Sentiment', color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
+                st.plotly_chart(fig_sent, use_container_width=True)
+                
+            with c2:
+                # Attributes Horizontal Bar Chart
+                attr_col = f"{client_name} Attributes"
+                all_attrs = st.session_state.output_df[attr_col].dropna().astype(str)
+                attr_list = all_attrs[all_attrs != 'N/A'].str.split(',').explode().str.strip()
+                attr_list = attr_list[attr_list != ''] 
+                
+                if not attr_list.empty:
+                    attr_counts = attr_list.value_counts().head(10).reset_index()
+                    attr_counts.columns = ['Attribute', 'Frequency']
+                    fig_attrs = px.bar(attr_counts, x='Frequency', y='Attribute', orientation='h', title="Top Attributes Identified")
+                    fig_attrs.update_layout(yaxis={'categoryorder':'total ascending'}) 
+                    st.plotly_chart(fig_attrs, use_container_width=True)
+                else:
+                    st.info("Not enough attribute data to generate a chart.")
+
+            # Display Data Table
+            st.divider()
+            st.markdown("### 📄 Processed Data")
+            st.dataframe(st.session_state.output_df)
+            
+            csv = st.session_state.output_df.to_csv(index=False).encode('utf-8')
+            file_country_tag = selected_country if selected_country != "All" else "all_countries"
+            
+            st.download_button(
+                label="📥 Download CSV", 
+                data=csv, 
+                file_name=f"{client_name.lower().replace(' ', '_')}_{file_country_tag}_audit.csv", 
+                mime="text/csv"
+            )
+elif uploaded_file and not client_name:
+    st.warning("Please enter a Client Name before running the audit.")
+else:
+    st.info("Waiting for CSV upload and Client Name...")

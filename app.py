@@ -3,15 +3,15 @@ import pandas as pd
 import openai
 
 # 1. Config & Setup
-st.set_page_config(page_title="Brand Radar Sentiment Auditor", layout="wide")
+st.set_page_config(page_title="Brand Radar Sentiment & Attribute Auditor", layout="wide")
 
 try:
     client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 except Exception:
     st.error("OpenAI API Key not found in Secrets. Please add it to Settings > Secrets.")
 
-st.title("🤖 AI Response Sentiment Auditor")
-st.markdown("Upload a Brand Radar export to automatically extract sentiment for your client and individual competitors.")
+st.title("🤖 AI Response Sentiment & Attribute Auditor")
+st.markdown("Upload a Brand Radar export to automatically extract sentiment and key attribute labels for your client and competitors.")
 
 # Initialize Session State to hold the processed data
 if 'output_df' not in st.session_state:
@@ -26,19 +26,30 @@ with col2:
 
 # 3. AI Processing Function
 def analyze_response(text, target_client, comp_list):
-    """Extracts sentiment dynamically for the client and each competitor, accounting for name variations."""
+    """Extracts sentiment and attributes dynamically for the client and each competitor."""
     if not text or len(str(text)) < 5:
-        return " | ".join(["Not Mentioned"] * (1 + len(comp_list)))
+        # 2 fields per brand: Sentiment | Attributes
+        return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
     
-    comp_prompts = "\n".join([f"    - '{c}': Positive, Neutral, Negative, or Not Mentioned?" for c in comp_list])
-    format_str = " | ".join([f"ClientSentiment"] + [f"Comp{i+1}Sentiment" for i in range(len(comp_list))])
+    comp_prompts = "\n".join([f"    - '{c}': Sentiment? Attributes?" for c in comp_list])
     
+    # Build the dynamic format string based on competitor count
+    format_parts = ["ClientSentiment | ClientAttributes"]
+    for i in range(len(comp_list)):
+        format_parts.append(f"Comp{i+1}Sentiment | Comp{i+1}Attributes")
+    format_str = " | ".join(format_parts)
+    
+    # UPDATED PROMPT: Added Attribute Extraction and Normalization
     prompt = f"""
     Analyze the following AI-generated text. 
     IMPORTANT: You must recognize variations in spacing, capitalization, or common typos as the same brand (e.g., treat 'Power apps' as 'PowerApps', 'Out Systems' as 'OutSystems').
     
-    1. Check if the client '{target_client}' (or variations of this name) is mentioned. What is the sentiment towards them? (Positive, Neutral, Negative, or Not Mentioned)
-    2. Check for the following competitors (or variations of their names) and determine their individual sentiment:
+    For each brand mentioned, extract:
+    A. Sentiment: (Positive, Neutral, Negative, or Not Mentioned)
+    B. Attributes: Extract 1 to 2 short attribute labels (max 2 words each) summarizing their key pros/cons in the text. Normalize these into broad industry terms (e.g., 'High Cost', 'Scalability', 'Steep Learning Curve'). If no specific attributes are mentioned, output 'N/A'.
+    
+    1. Check the client '{target_client}' (or variations).
+    2. Check the following competitors (or variations):
 {comp_prompts}
     
     Response text: "{text}"
@@ -57,14 +68,14 @@ def analyze_response(text, target_client, comp_list):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return " | ".join(["Error"] * (1 + len(comp_list)))
+        return " | ".join(["Error | Error"] * (1 + len(comp_list)))
 
 # 4. File Uploader & Execution
 uploaded_file = st.sidebar.file_uploader("Upload Brand Radar CSV", type="csv")
 st.sidebar.divider()
 sample_mode = st.sidebar.checkbox("Sample Mode (Analyze first 5 rows only)", value=True)
 
-# Clear session state if a new file is uploaded so old results don't linger
+# Clear session state if a new file is uploaded
 if uploaded_file is None and st.session_state.output_df is not None:
     st.session_state.output_df = None
 
@@ -107,10 +118,18 @@ if uploaded_file and client_name:
                     raw_output = analyze_response(row, client_name, comp_list)
                     
                     parts = [p.strip() for p in raw_output.split("|")]
-                    row_dict = {f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown"}
                     
+                    # Safely map Client Sentiment & Attributes
+                    row_dict = {
+                        f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown",
+                        f"{client_name} Attributes": parts[1] if len(parts) > 1 else "N/A"
+                    }
+                    
+                    # Safely map Competitor Sentiment & Attributes
                     for idx, comp in enumerate(comp_list):
-                        row_dict[f"{comp} Sentiment"] = parts[idx + 1] if (idx + 1) < len(parts) else "Unknown"
+                        base_idx = 2 + (idx * 2)
+                        row_dict[f"{comp} Sentiment"] = parts[base_idx] if base_idx < len(parts) else "Unknown"
+                        row_dict[f"{comp} Attributes"] = parts[base_idx + 1] if (base_idx + 1) < len(parts) else "N/A"
                         
                     parsed_results.append(row_dict)
                     
@@ -120,10 +139,10 @@ if uploaded_file and client_name:
 
                 results_df = pd.DataFrame(parsed_results)
                 
-                # --- UPDATED: Keep ALL original columns ---
+                # Keep ALL original columns
                 base_df = process_df.reset_index(drop=True)
                 
-                # Save the final merged dataframe into Streamlit's session state memory
+                # Save the final merged dataframe
                 st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
                 
                 st.success("Audit complete! Preview the data below:")
@@ -133,7 +152,6 @@ if uploaded_file and client_name:
             st.dataframe(st.session_state.output_df)
 
             csv = st.session_state.output_df.to_csv(index=False).encode('utf-8')
-            
             file_country_tag = selected_country if selected_country != "All" else "all_countries"
             
             st.download_button(

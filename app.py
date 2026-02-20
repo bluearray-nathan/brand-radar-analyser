@@ -74,24 +74,20 @@ if uploaded_file and client_name:
     if 'AI Overview' not in df.columns or 'Link URL' not in df.columns:
         st.error("CSV must contain columns: 'AI Overview' and 'Link URL'")
     else:
-        # --- NEW: Country Filter Logic ---
-        # Assuming Column A is the first column (index 0)
+        # --- Country Filter Logic ---
         country_col = df.columns[0]
         
-        # Get unique countries (forcing lowercase as requested)
+        # Get unique countries (forcing lowercase)
         unique_countries = ["All"] + sorted(df[country_col].dropna().astype(str).str.lower().unique().tolist())
         
-        # Display the dropdown
         st.markdown("### Filter Data")
         selected_country = st.selectbox(f"Select Country (Filtering by '{country_col}')", options=unique_countries)
         
-        # Apply the filter if a specific country is chosen
         if selected_country != "All":
             df = df[df[country_col].astype(str).str.lower() == selected_country]
             
         st.info(f"Rows ready to process: {len(df)}")
         st.divider()
-        # ----------------------------------
 
         if st.button(f"🚀 Run Audit for {client_name}"):
             if len(df) == 0:
@@ -123,8 +119,9 @@ if uploaded_file and client_name:
                     status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
 
                 results_df = pd.DataFrame(parsed_results)
-                # Keep the country column in the final output as well for context
-                base_df = process_df[[country_col, 'AI Overview', 'Link URL']].reset_index(drop=True)
+                
+                # --- UPDATED: Keep ALL original columns ---
+                base_df = process_df.reset_index(drop=True)
                 
                 # Save the final merged dataframe into Streamlit's session state memory
                 st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
@@ -137,7 +134,6 @@ if uploaded_file and client_name:
 
             csv = st.session_state.output_df.to_csv(index=False).encode('utf-8')
             
-            # Update filename to reflect the country filter
             file_country_tag = selected_country if selected_country != "All" else "all_countries"
             
             st.download_button(

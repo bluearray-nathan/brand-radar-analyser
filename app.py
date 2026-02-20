@@ -24,15 +24,25 @@ with col1:
 with col2:
     competitors_input = st.text_input("Competitors (comma separated)", placeholder="e.g. Mendix, PowerApps")
 
-# --- NEW: Preferred Tags Input ---
-preferred_tags = st.text_input(
-    "Preferred Attribute Tags (Optional)", 
-    placeholder="e.g. Agentic AI, High Cost, Scalability",
-    help="List your benchmark tags here. The AI will map synonyms (e.g., 'AI assistance') to these exact tags for cleaner reporting."
-)
+col3, col4 = st.columns(2)
+with col3:
+    preferred_tags = st.text_input(
+        "Preferred Attribute Tags (Optional)", 
+        placeholder="e.g. Agentic AI, High Cost, Scalability",
+        help="The AI will try to map synonyms to these exact tags for cleaner reporting."
+    )
+with col4:
+    max_attributes = st.number_input(
+        "Max Attributes per Brand", 
+        min_value=1, 
+        max_value=10, 
+        value=2, 
+        step=1,
+        help="Choose how many attribute labels the AI should extract for each brand."
+    )
 
 # 3. AI Processing Function
-def analyze_response(text, target_client, comp_list, pref_tags):
+def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
     """Extracts sentiment and attributes, mapping to preferred tags when possible."""
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
@@ -45,7 +55,7 @@ def analyze_response(text, target_client, comp_list, pref_tags):
     format_str = " | ".join(format_parts)
     
     # --- UPDATED PROMPT LOGIC ---
-    tag_logic = f"CRITICAL: You must map attributes to these Preferred Tags if they are semantically similar: [{pref_tags}]. For example, if the text says 'AI assistance' and 'Agentic AI' is a preferred tag, output 'Agentic AI'. If no preferred tags fit, create a new broad industry term (max 2 words)." if pref_tags else "Normalize into broad industry terms (max 2 words)."
+    tag_logic = f"CRITICAL: You must map attributes to these Preferred Tags if they are semantically similar: [{pref_tags}]. If no preferred tags fit, create a new broad industry term." if pref_tags else "Normalize into broad industry terms."
     
     prompt = f"""
     Analyze the following AI-generated text. 
@@ -53,7 +63,7 @@ def analyze_response(text, target_client, comp_list, pref_tags):
     
     For each brand mentioned, extract:
     A. Sentiment: (Positive, Neutral, Negative, or Not Mentioned)
-    B. Attributes: Extract 1 to 2 short labels summarizing their key pros/cons. 
+    B. Attributes: Extract up to {max_attrs} short labels (max 2 words each) summarizing their key pros/cons, separated by commas. 
     {tag_logic}
     If no specific attributes are mentioned, output 'N/A'.
     
@@ -116,7 +126,7 @@ if uploaded_file and client_name:
                 
                 # Processing Loop
                 for i, row in enumerate(process_df['AI Overview']):
-                    raw_output = analyze_response(row, client_name, comp_list, preferred_tags)
+                    raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes)
                     
                     parts = [p.strip() for p in raw_output.split("|")]
                     row_dict = {

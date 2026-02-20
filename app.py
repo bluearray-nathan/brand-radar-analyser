@@ -188,42 +188,78 @@ if uploaded_file and client_name:
             st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
             st.success("Turbo Audit complete!")
 
-        # --- Display Results (Unchanged) ---
+        # --- Display Results ---
         if st.session_state.output_df is not None:
             comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
             
             st.markdown(f"### 📊 Brand Positioning: {client_name}")
             c1, c2 = st.columns(2)
+            
             with c1:
-                st.plotly_chart(px.bar(st.session_state.output_df[f"{client_name} Sentiment"].value_counts().reset_index(), x='count', y=f'{client_name} Sentiment', title="Sentiment", orientation='h'), use_container_width=True)
+                sent_counts = st.session_state.output_df[f"{client_name} Sentiment"].value_counts().reset_index()
+                sent_counts.columns = ['Sentiment', 'Mentions']
+                fig_sent = px.bar(sent_counts, x='Mentions', y='Sentiment', title="Sentiment Distribution", orientation='h',
+                                  color='Sentiment', color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
+                st.plotly_chart(fig_sent, use_container_width=True)
+                
             with c2:
                 attr_list = st.session_state.output_df[f"{client_name} Attributes"].dropna().astype(str).str.split(',').explode().str.strip()
-                st.plotly_chart(px.bar(attr_list[attr_list != 'N/A'].value_counts().head(10).reset_index(), x='count', y='index', orientation='h', title="Top Attributes"), use_container_width=True)
+                if not attr_list.empty and len(attr_list[attr_list != 'N/A']) > 0:
+                    attr_counts = attr_list[attr_list != 'N/A'].value_counts().head(10).reset_index()
+                    attr_counts.columns = ['Attribute', 'Frequency']
+                    fig_attrs = px.bar(attr_counts, x='Frequency', y='Attribute', orientation='h', title="Top Attributes")
+                    fig_attrs.update_layout(yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_attrs, use_container_width=True)
 
             if comp_list:
                 st.markdown("### 📊 Competitor Brand Positioning")
                 c_comp1, c_comp2 = st.columns(2)
+                
                 with c_comp1:
                     comp_sent_cols = [f"{c} Sentiment" for c in comp_list]
                     if all(col in st.session_state.output_df.columns for col in comp_sent_cols):
                         melted_sent = st.session_state.output_df.melt(value_vars=comp_sent_cols, var_name='Competitor', value_name='Sentiment')
                         melted_sent['Competitor'] = melted_sent['Competitor'].str.replace(' Sentiment', '')
-                        st.plotly_chart(px.bar(melted_sent.groupby(['Competitor', 'Sentiment']).size().reset_index(name='Mentions'), x='Competitor', y='Mentions', color='Sentiment', barmode='group'), use_container_width=True)
+                        comp_sent_counts = melted_sent.groupby(['Competitor', 'Sentiment']).size().reset_index(name='Mentions')
+                        fig_comp_sent = px.bar(comp_sent_counts, x='Competitor', y='Mentions', color='Sentiment', barmode='group', title="Competitor Sentiment Comparison", color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
+                        st.plotly_chart(fig_comp_sent, use_container_width=True)
+                        
                 with c_comp2:
                     comp_attr_data = [{'Competitor': c, 'Attribute': attr} for c in comp_list if f"{c} Attributes" in st.session_state.output_df.columns for attr in st.session_state.output_df[f"{c} Attributes"].dropna().astype(str).str.split(',').explode().str.strip() if attr != 'N/A' and attr != '']
                     if comp_attr_data:
                         comp_attr_df = pd.DataFrame(comp_attr_data)
                         top_attrs = comp_attr_df['Attribute'].value_counts().head(10).index.tolist()
-                        st.plotly_chart(px.bar(comp_attr_df[comp_attr_df['Attribute'].isin(top_attrs)].groupby(['Attribute', 'Competitor']).size().reset_index(name='Freq'), y='Attribute', x='Freq', color='Competitor', orientation='h', barmode='stack'), use_container_width=True)
+                        filtered_attrs = comp_attr_df[comp_attr_df['Attribute'].isin(top_attrs)]
+                        attr_group_counts = filtered_attrs.groupby(['Attribute', 'Competitor']).size().reset_index(name='Frequency')
+                        fig_comp_attrs = px.bar(attr_group_counts, y='Attribute', x='Frequency', color='Competitor', orientation='h', barmode='stack', title="Top Competitor Attributes")
+                        fig_comp_attrs.update_layout(yaxis={'categoryorder':'total ascending'})
+                        st.plotly_chart(fig_comp_attrs, use_container_width=True)
 
             st.markdown("### 🌐 Top Influencing Sources")
             c3, c4 = st.columns(2)
             valid_urls = st.session_state.output_df['Link URL'].dropna().astype(str).str.split(r'[\s,]+').explode().str.strip()
             valid_urls = valid_urls[valid_urls.str.startswith('http', na=False)]
+            
             with c3:
-                st.plotly_chart(px.bar(valid_urls.value_counts().reset_index().head(10), x='count', y='index', orientation='h', title="Top Exact URLs"), use_container_width=True)
+                if not valid_urls.empty:
+                    url_counts = valid_urls.value_counts().reset_index().head(10)
+                    url_counts.columns = ['URL', 'Citations']
+                    fig_urls = px.bar(url_counts, x='Citations', y='URL', orientation='h', title="Top Exact URLs")
+                    fig_urls.update_layout(yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_urls, use_container_width=True)
+                
             with c4:
-                st.plotly_chart(px.bar(valid_urls.apply(get_single_domain).value_counts().reset_index().head(10), x='count', y='index', orientation='h', title="Top Domains"), use_container_width=True)
+                if not valid_urls.empty:
+                    domain_counts = valid_urls.apply(get_single_domain).value_counts().reset_index().head(10)
+                    domain_counts.columns = ['Domain', 'Citations']
+                    fig_domains = px.bar(domain_counts, x='Citations', y='Domain', orientation='h', title="Top Domains")
+                    fig_domains.update_layout(yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_domains, use_container_width=True)
 
             st.dataframe(st.session_state.output_df)
             st.download_button("📥 Download Master CSV", st.session_state.output_df.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_master_audit.csv", "text/csv")
+
+elif uploaded_file and not client_name:
+    st.warning("Please enter a Client Name.")
+else:
+    st.info("Waiting for CSV upload and Client Name...")

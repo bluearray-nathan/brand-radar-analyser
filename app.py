@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import openai
 import plotly.express as px
+from urllib.parse import urlparse
 
 # 1. Config & Setup
 st.set_page_config(page_title="Brand Radar Sentiment Auditor", layout="wide")
@@ -12,7 +13,7 @@ except Exception:
     st.error("OpenAI API Key not found in Secrets. Please add it to Settings > Secrets.")
 
 st.title("🤖 AI Response Sentiment Auditor")
-st.markdown("Upload a Brand Radar export to automatically extract sentiment and key attributes.")
+st.markdown("Upload a Brand Radar export to automatically extract sentiment, attributes, and top influencing URLs.")
 
 # Initialize Session State
 if 'output_df' not in st.session_state:
@@ -46,7 +47,6 @@ with col4:
 
 # --- Tag Suggestion Function ---
 def suggest_tags(df_sample, target_client, comp_list):
-    """Scans a sample of the data to suggest common attribute tags."""
     sample_text = "\n---\n".join(df_sample['AI Overview'].dropna().astype(str).tolist())
     comps = ", ".join(comp_list) if comp_list else "its competitors"
     
@@ -72,7 +72,6 @@ def suggest_tags(df_sample, target_client, comp_list):
 
 # 3. AI Processing Function
 def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
-    """Extracts sentiment and attributes, mapping to preferred tags when possible."""
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
     
@@ -114,6 +113,14 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
         return response.choices[0].message.content.strip()
     except Exception as e:
         return " | ".join(["Error | Error"] * (1 + len(comp_list)))
+
+# --- Helper Function for Domains ---
+def get_domain(url):
+    try:
+        domain = urlparse(str(url)).netloc
+        return domain.replace('www.', '') if domain else str(url)
+    except:
+        return str(url)
 
 # 4. File Uploader & Execution
 uploaded_file = st.sidebar.file_uploader("Upload Brand Radar CSV", type="csv")
@@ -187,6 +194,10 @@ if uploaded_file and client_name:
                     status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
 
                 results_df = pd.DataFrame(parsed_results)
+                
+                # Also add the root domain to the main dataframe for good measure
+                process_df['Root Domain'] = process_df['Link URL'].dropna().apply(get_domain)
+                
                 base_df = process_df.reset_index(drop=True)
                 st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
                 
@@ -194,12 +205,13 @@ if uploaded_file and client_name:
 
         # --- Display Results & Charts ---
         if st.session_state.output_df is not None:
-            # Render Charts
-            st.markdown(f"### 📊 Visualizing {client_name} Data")
+            file_country_tag = selected_country if selected_country != "All" else "all_countries"
+            
+            # 1. Sentiment & Attributes Charts
+            st.markdown(f"### 📊 Brand Positioning for {client_name}")
             c1, c2 = st.columns(2)
             
             with c1:
-                # Sentiment Bar Chart
                 sentiment_col = f"{client_name} Sentiment"
                 sent_counts = st.session_state.output_df[sentiment_col].value_counts().reset_index()
                 sent_counts.columns = ['Sentiment', 'Mentions']
@@ -208,7 +220,6 @@ if uploaded_file and client_name:
                 st.plotly_chart(fig_sent, use_container_width=True)
                 
             with c2:
-                # Attributes Horizontal Bar Chart
                 attr_col = f"{client_name} Attributes"
                 all_attrs = st.session_state.output_df[attr_col].dropna().astype(str)
                 attr_list = all_attrs[all_attrs != 'N/A'].str.split(',').explode().str.strip()
@@ -223,18 +234,45 @@ if uploaded_file and client_name:
                 else:
                     st.info("Not enough attribute data to generate a chart.")
 
+            # 2. Source Influence Charts
+            st.markdown("### 🌐 Top Influencing Sources")
+            c3, c4 = st.columns(2)
+            
+            with c3:
+                # Top Exact URLs
+                url_counts = st.session_state.output_df['Link URL'].dropna().value_counts().reset_index()
+                url_counts.columns = ['URL', 'Citations']
+                fig_urls = px.bar(url_counts.head(10), x='Citations', y='URL', orientation='h', title="Top Exact URLs Cited")
+                fig_urls.update_layout(yaxis={'categoryorder':'total ascending'})
+                st.plotly_chart(fig_urls, use_container_width=True)
+                
+                # Separate Download Button for URL Ranking
+                csv_urls = url_counts.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Top URLs CSV", csv_urls, f"{client_name.lower()}_{file_country_tag}_top_urls.csv", "text/csv")
+                
+            with c4:
+                # Top Root Domains
+                domain_counts = st.session_state.output_df['Root Domain'].dropna().value_counts().reset_index()
+                domain_counts.columns = ['Domain', 'Citations']
+                fig_domains = px.bar(domain_counts.head(10), x='Citations', y='Domain', orientation='h', title="Top Root Domains")
+                fig_domains.update_layout(yaxis={'categoryorder':'total ascending'})
+                st.plotly_chart(fig_domains, use_container_width=True)
+                
+                # Separate Download Button for Domain Ranking
+                csv_domains = domain_counts.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Top Domains CSV", csv_domains, f"{client_name.lower()}_{file_country_tag}_top_domains.csv", "text/csv")
+
             # Display Data Table
             st.divider()
-            st.markdown("### 📄 Processed Data")
+            st.markdown("### 📄 Processed Master Data")
             st.dataframe(st.session_state.output_df)
             
-            csv = st.session_state.output_df.to_csv(index=False).encode('utf-8')
-            file_country_tag = selected_country if selected_country != "All" else "all_countries"
+            csv_main = st.session_state.output_df.to_csv(index=False).encode('utf-8')
             
             st.download_button(
-                label="📥 Download CSV", 
-                data=csv, 
-                file_name=f"{client_name.lower().replace(' ', '_')}_{file_country_tag}_audit.csv", 
+                label="📥 Download Master Audited CSV", 
+                data=csv_main, 
+                file_name=f"{client_name.lower().replace(' ', '_')}_{file_country_tag}_master_audit.csv", 
                 mime="text/csv"
             )
 elif uploaded_file and not client_name:

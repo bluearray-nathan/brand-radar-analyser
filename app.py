@@ -33,7 +33,6 @@ def analyze_response(text, target_client, comp_list):
     comp_prompts = "\n".join([f"    - '{c}': Positive, Neutral, Negative, or Not Mentioned?" for c in comp_list])
     format_str = " | ".join([f"ClientSentiment"] + [f"Comp{i+1}Sentiment" for i in range(len(comp_list))])
     
-    # UPDATED PROMPT: Added explicit instructions for name variations
     prompt = f"""
     Analyze the following AI-generated text. 
     IMPORTANT: You must recognize variations in spacing, capitalization, or common typos as the same brand (e.g., treat 'Power apps' as 'PowerApps', 'Out Systems' as 'OutSystems').
@@ -75,50 +74,76 @@ if uploaded_file and client_name:
     if 'AI Overview' not in df.columns or 'Link URL' not in df.columns:
         st.error("CSV must contain columns: 'AI Overview' and 'Link URL'")
     else:
-        if st.button(f"🚀 Run Audit for {client_name}"):
-            process_df = df.head(5).copy() if sample_mode else df.copy()
+        # --- NEW: Country Filter Logic ---
+        # Assuming Column A is the first column (index 0)
+        country_col = df.columns[0]
+        
+        # Get unique countries (forcing lowercase as requested)
+        unique_countries = ["All"] + sorted(df[country_col].dropna().astype(str).str.lower().unique().tolist())
+        
+        # Display the dropdown
+        st.markdown("### Filter Data")
+        selected_country = st.selectbox(f"Select Country (Filtering by '{country_col}')", options=unique_countries)
+        
+        # Apply the filter if a specific country is chosen
+        if selected_country != "All":
+            df = df[df[country_col].astype(str).str.lower() == selected_country]
             
-            comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            parsed_results = []
-            
-            # Processing Loop
-            for i, row in enumerate(process_df['AI Overview']):
-                raw_output = analyze_response(row, client_name, comp_list)
-                
-                parts = [p.strip() for p in raw_output.split("|")]
-                row_dict = {f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown"}
-                
-                for idx, comp in enumerate(comp_list):
-                    row_dict[f"{comp} Sentiment"] = parts[idx + 1] if (idx + 1) < len(parts) else "Unknown"
-                    
-                parsed_results.append(row_dict)
-                
-                pct = int((i + 1) / len(process_df) * 100)
-                progress_bar.progress(pct)
-                status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
+        st.info(f"Rows ready to process: {len(df)}")
+        st.divider()
+        # ----------------------------------
 
-            results_df = pd.DataFrame(parsed_results)
-            base_df = process_df[['AI Overview', 'Link URL']].reset_index(drop=True)
-            
-            # Save the final merged dataframe into Streamlit's session state memory
-            st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
-            
-            st.success("Audit complete! Preview the data below:")
+        if st.button(f"🚀 Run Audit for {client_name}"):
+            if len(df) == 0:
+                st.warning("No data left to process after filtering. Please select a different country.")
+            else:
+                process_df = df.head(5).copy() if sample_mode else df.copy()
+                
+                comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                parsed_results = []
+                
+                # Processing Loop
+                for i, row in enumerate(process_df['AI Overview']):
+                    raw_output = analyze_response(row, client_name, comp_list)
+                    
+                    parts = [p.strip() for p in raw_output.split("|")]
+                    row_dict = {f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown"}
+                    
+                    for idx, comp in enumerate(comp_list):
+                        row_dict[f"{comp} Sentiment"] = parts[idx + 1] if (idx + 1) < len(parts) else "Unknown"
+                        
+                    parsed_results.append(row_dict)
+                    
+                    pct = int((i + 1) / len(process_df) * 100)
+                    progress_bar.progress(pct)
+                    status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
+
+                results_df = pd.DataFrame(parsed_results)
+                # Keep the country column in the final output as well for context
+                base_df = process_df[[country_col, 'AI Overview', 'Link URL']].reset_index(drop=True)
+                
+                # Save the final merged dataframe into Streamlit's session state memory
+                st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
+                
+                st.success("Audit complete! Preview the data below:")
 
         # --- Display results from Session State ---
         if st.session_state.output_df is not None:
-            st.divider()
             st.dataframe(st.session_state.output_df)
 
             csv = st.session_state.output_df.to_csv(index=False).encode('utf-8')
+            
+            # Update filename to reflect the country filter
+            file_country_tag = selected_country if selected_country != "All" else "all_countries"
+            
             st.download_button(
                 label="📥 Download CSV", 
                 data=csv, 
-                file_name=f"{client_name.lower().replace(' ', '_')}_competitive_audit.csv", 
+                file_name=f"{client_name.lower().replace(' ', '_')}_{file_country_tag}_audit.csv", 
                 mime="text/csv"
             )
 

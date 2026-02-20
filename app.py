@@ -64,7 +64,7 @@ def suggest_tags(df_sample, target_client, comp_list):
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5
         )
@@ -74,7 +74,7 @@ def suggest_tags(df_sample, target_client, comp_list):
 
 # 3. AI Processing Function
 def analyze_response(text, target_client, comp_list, pref_tags, max_attrs, mentions_list):
-    """Extracts sentiment and attributes, using the Mentions column as a ground-truth guide."""
+    """Extracts sentiment and attributes with deterministic locking for consistent reporting."""
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
     
@@ -122,7 +122,8 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs, menti
                 {"role": "system", "content": "You are a senior brand analyst. Extract sentiment and attributes precisely according to the format provided."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0
+            temperature=0,  # Forces greedy, analytical responses
+            seed=42         # Attempts to lock reproducibility across runs
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -205,13 +206,16 @@ if uploaded_file and client_name:
                         mentions_val = ""
 
                     raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes, mentions_val)
+                    
                     parts = [p.strip() for p in raw_output.split("|")]
                     
+                    # Map Client Data
                     row_dict = {
                         f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown",
                         f"{client_name} Attributes": parts[1] if len(parts) > 1 else "N/A"
                     }
                     
+                    # Map Competitor Data
                     for idx, comp in enumerate(comp_list):
                         base_idx = 2 + (idx * 2)
                         row_dict[f"{comp} Sentiment"] = parts[base_idx] if base_idx < len(parts) else "Unknown"
@@ -242,7 +246,7 @@ if uploaded_file and client_name:
                 sentiment_col = f"{client_name} Sentiment"
                 sent_counts = st.session_state.output_df[sentiment_col].value_counts().reset_index()
                 sent_counts.columns = ['Sentiment', 'Mentions']
-                fig_sent = px.bar(sent_counts, x='Sentiment', y='Mentions', title=f"{client_name} Sentiment",
+                fig_sent = px.bar(sent_counts, x='Sentiment', y='Mentions', title=f"{client_name} Sentiment Distribution",
                                   color='Sentiment', color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
                 st.plotly_chart(fig_sent, use_container_width=True)
                 
@@ -259,7 +263,7 @@ if uploaded_file and client_name:
                     fig_attrs.update_layout(yaxis={'categoryorder':'total ascending'}) 
                     st.plotly_chart(fig_attrs, use_container_width=True)
 
-            # --- 2. NEW: Competitor Positioning Charts ---
+            # --- 2. Competitor Positioning Charts ---
             if comp_list:
                 st.divider()
                 st.markdown("### 📊 Competitor Brand Positioning")
@@ -267,9 +271,7 @@ if uploaded_file and client_name:
                 
                 with c_comp1:
                     comp_sent_cols = [f"{c} Sentiment" for c in comp_list]
-                    # Make sure columns exist before plotting
                     if all(col in st.session_state.output_df.columns for col in comp_sent_cols):
-                        # Melt the dataframe from wide to long format for Plotly
                         melted_sent = st.session_state.output_df.melt(value_vars=comp_sent_cols, var_name='Competitor', value_name='Sentiment')
                         melted_sent['Competitor'] = melted_sent['Competitor'].str.replace(' Sentiment', '')
                         
@@ -293,7 +295,6 @@ if uploaded_file and client_name:
                                 
                     if comp_attr_data:
                         comp_attr_df = pd.DataFrame(comp_attr_data)
-                        # Find the overall top 10 attributes across all competitors to keep the chart readable
                         top_attrs = comp_attr_df['Attribute'].value_counts().head(10).index.tolist()
                         filtered_attrs = comp_attr_df[comp_attr_df['Attribute'].isin(top_attrs)]
                         

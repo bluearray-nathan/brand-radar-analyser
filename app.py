@@ -141,6 +141,10 @@ def process_single_row(i, row_text, mentions_val, client_name, comp_list, prefer
 uploaded_file = st.sidebar.file_uploader("Upload Brand Radar CSV", type="csv")
 sample_mode = st.sidebar.checkbox("Sample Mode (Analyze first 5 rows only)", value=True)
 
+if uploaded_file is None:
+    st.session_state.output_df = None
+    st.session_state.suggested_tags = None
+
 if uploaded_file and client_name:
     df = pd.read_csv(uploaded_file)
     if 'AI Overview' not in df.columns or 'Link URL' not in df.columns:
@@ -252,21 +256,31 @@ if uploaded_file and client_name:
             
             with c3:
                 if not valid_urls.empty:
-                    url_counts = valid_urls.value_counts().reset_index().head(10)
-                    url_counts.columns = ['URL', 'Citations']
-                    fig_urls = px.bar(url_counts, x='Citations', y='URL', orientation='h', title="Top Exact URLs")
+                    # Get ALL URLs for the CSV
+                    url_counts_all = valid_urls.value_counts().reset_index()
+                    url_counts_all.columns = ['URL', 'Citations']
+                    
+                    # Only plot the Top 10 for the chart
+                    fig_urls = px.bar(url_counts_all.head(10), x='Citations', y='URL', orientation='h', title="Top 10 Exact URLs")
                     fig_urls.update_layout(yaxis={'categoryorder':'total ascending'})
                     st.plotly_chart(fig_urls, use_container_width=True)
-                    st.download_button("📥 Download Top URLs CSV", url_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_top_urls.csv", "text/csv")
+                    
+                    # Download ALL URLs
+                    st.download_button("📥 Download ALL URLs CSV", url_counts_all.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_all_urls.csv", "text/csv")
                 
             with c4:
                 if not valid_urls.empty:
-                    domain_counts = valid_urls.apply(get_single_domain).value_counts().reset_index().head(10)
-                    domain_counts.columns = ['Domain', 'Citations']
-                    fig_domains = px.bar(domain_counts, x='Citations', y='Domain', orientation='h', title="Top Domains")
+                    # Get ALL Domains for the CSV
+                    domain_counts_all = valid_urls.apply(get_single_domain).value_counts().reset_index()
+                    domain_counts_all.columns = ['Domain', 'Citations']
+                    
+                    # Only plot the Top 10 for the chart
+                    fig_domains = px.bar(domain_counts_all.head(10), x='Citations', y='Domain', orientation='h', title="Top 10 Domains")
                     fig_domains.update_layout(yaxis={'categoryorder':'total ascending'})
                     st.plotly_chart(fig_domains, use_container_width=True)
-                    st.download_button("📥 Download Top Domains CSV", domain_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_top_domains.csv", "text/csv")
+                    
+                    # Download ALL Domains
+                    st.download_button("📥 Download ALL Domains CSV", domain_counts_all.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_all_domains.csv", "text/csv")
 
             st.divider()
             st.dataframe(st.session_state.output_df)

@@ -69,34 +69,39 @@ def suggest_tags(df_sample, target_client, comp_list):
             temperature=0.5
         )
         return response.choices[0].message.content.strip()
-    except Exception:
+    except Exception as e:
         return "Error generating suggestions."
 
-# 3. AI Processing Function (REINFORCED LOGIC)
+# 3. AI Processing Function
 def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
-    """Extracts sentiment and attributes with reinforced strictness and contextual inference."""
+    """Extracts sentiment and attributes with reinforced strictness for long lists."""
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
     
+    # Define formatting requirements
     format_parts = ["ClientSentiment | ClientAttributes"]
     for i in range(len(comp_list)):
         format_parts.append(f"Comp{i+1}Sentiment | Comp{i+1}Attributes")
     format_str = " | ".join(format_parts)
     
+    # Calculate expected item count (Brand Count * 2 fields each)
     expected_items = (len(comp_list) + 1) * 2
+    
     tag_logic = f"CRITICAL: You must map attributes to these Preferred Tags if they are semantically similar: [{pref_tags}]. If no preferred tags fit, create a new broad industry term." if pref_tags else "Normalize into broad industry terms."
+    
     comp_prompts = "\n".join([f"    - '{c}': Sentiment? Attributes?" for c in comp_list])
 
     prompt = f"""
     Analyze the following AI-generated text. 
+    IMPORTANT: Recognize brand name variations (e.g., 'Power apps' = 'PowerApps').
     
-    RULES FOR EXTRACTION:
-    1. SENTIMENT: If a brand is listed as an 'Industry Leader', 'Enterprise-Grade', or 'Top Platform', treat this as POSITIVE. Only use Neutral if the mention is purely functional with no status attached.
-    2. ATTRIBUTES: If a brand is categorized (e.g., 'Business Process Automation' or 'Complex Scaling'), use those categories as attributes. Extract up to {max_attrs} short labels, separated by commas.
-    3. BRAND MATCHING: Recognize variations (e.g., 'Power apps' = 'PowerApps').
-    4. {tag_logic}
+    For each brand mentioned, extract:
+    A. Sentiment: (Positive, Neutral, Negative, or Not Mentioned)
+    B. Attributes: Extract up to {max_attrs} short labels (max 2 words each) summarizing their key pros/cons, separated by commas. 
+    {tag_logic}
+    If no specific attributes are mentioned, output 'N/A'.
     
-    You MUST evaluate the client and EVERY SINGLE competitor. Do not skip any:
+    You MUST evaluate the client and EVERY SINGLE competitor in this list. Do not skip any:
     1. Client: '{target_client}'
     2. Competitors:
 {comp_prompts}
@@ -104,7 +109,7 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
     Response text: "{text}"
     
     Return ONLY in this exact pipe-separated format. 
-    CRITICAL: You MUST output exactly {expected_items} pipe-separated values:
+    CRITICAL: You MUST output exactly {expected_items} pipe-separated values. Do not skip the brands at the end of the list:
     {format_str}
     
     Do not include any other text, reasoning, or markdown.
@@ -113,14 +118,11 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a senior brand analyst. Extract sentiment and attributes precisely according to the format provided."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
         return response.choices[0].message.content.strip()
-    except Exception:
+    except Exception as e:
         return " | ".join(["Error | Error"] * (1 + len(comp_list)))
 
 # --- Helper Functions for URLs and Domains ---
@@ -172,9 +174,10 @@ if uploaded_file and client_name:
         
         if len(df) > 0:
             if st.button("💡 Suggest Tags from Data"):
-                with st.spinner("Scanning data..."):
+                with st.spinner("Scanning data for common themes..."):
                     comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
-                    st.session_state.suggested_tags = suggest_tags(df.head(15), client_name, comp_list)
+                    sample_df = df.head(15)
+                    st.session_state.suggested_tags = suggest_tags(sample_df, client_name, comp_list)
             
             if st.session_state.suggested_tags:
                 st.success("Suggested Themes:")
@@ -195,55 +198,82 @@ if uploaded_file and client_name:
                 
                 for i, row in enumerate(process_df['AI Overview']):
                     raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes)
+                    
                     parts = [p.strip() for p in raw_output.split("|")]
                     
+                    # Map Client Data
                     row_dict = {
                         f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown",
                         f"{client_name} Attributes": parts[1] if len(parts) > 1 else "N/A"
                     }
                     
+                    # Map Competitor Data
                     for idx, comp in enumerate(comp_list):
                         base_idx = 2 + (idx * 2)
                         row_dict[f"{comp} Sentiment"] = parts[base_idx] if base_idx < len(parts) else "Unknown"
                         row_dict[f"{comp} Attributes"] = parts[base_idx + 1] if (base_idx + 1) < len(parts) else "N/A"
                         
                     parsed_results.append(row_dict)
-                    progress_bar.progress(int((i + 1) / len(process_df) * 100))
+                    
+                    pct = int((i + 1) / len(process_df) * 100)
+                    progress_bar.progress(pct)
                     status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
 
                 results_df = pd.DataFrame(parsed_results)
                 process_df['Extracted Domains'] = process_df['Link URL'].apply(extract_all_domains)
-                st.session_state.output_df = pd.concat([process_df.reset_index(drop=True), results_df], axis=1)
+                base_df = process_df.reset_index(drop=True)
+                st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
                 st.success("Audit complete!")
 
         # --- Display Results ---
         if st.session_state.output_df is not None:
+            file_country_tag = selected_country if selected_country != "All" else "all_countries"
+            
             st.markdown(f"### 📊 Brand Positioning: {client_name}")
             c1, c2 = st.columns(2)
+            
             with c1:
-                st.plotly_chart(px.bar(st.session_state.output_df[f"{client_name} Sentiment"].value_counts().reset_index(), x='index', y=f'{client_name} Sentiment', title="Sentiment Distribution", color='index', color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e'}), use_container_width=True)
+                sentiment_col = f"{client_name} Sentiment"
+                sent_counts = st.session_state.output_df[sentiment_col].value_counts().reset_index()
+                sent_counts.columns = ['Sentiment', 'Mentions']
+                fig_sent = px.bar(sent_counts, x='Sentiment', y='Mentions', title="Sentiment Distribution",
+                                  color='Sentiment', color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
+                st.plotly_chart(fig_sent, use_container_width=True)
+                
             with c2:
-                attr_list = st.session_state.output_df[f"{client_name} Attributes"].dropna().astype(str).str.split(',').explode().str.strip()
-                st.plotly_chart(px.bar(attr_list[attr_list != 'N/A'].value_counts().head(10).reset_index(), x='count', y='index', orientation='h', title="Top Attributes"), use_container_width=True)
+                attr_col = f"{client_name} Attributes"
+                all_attrs = st.session_state.output_df[attr_col].dropna().astype(str)
+                attr_list = all_attrs[all_attrs != 'N/A'].str.split(',').explode().str.strip()
+                attr_list = attr_list[attr_list != ''] 
+                
+                if not attr_list.empty:
+                    attr_counts = attr_list.value_counts().head(10).reset_index()
+                    attr_counts.columns = ['Attribute', 'Frequency']
+                    fig_attrs = px.bar(attr_counts, x='Frequency', y='Attribute', orientation='h', title="Top Attributes Identified")
+                    fig_attrs.update_layout(yaxis={'categoryorder':'total ascending'}) 
+                    st.plotly_chart(fig_attrs, use_container_width=True)
 
             st.markdown("### 🌐 Top Influencing Sources")
             c3, c4 = st.columns(2)
-            raw_urls = st.session_state.output_df['Link URL'].dropna().astype(str).str.split(r'[\s,]+').explode().str.strip()
-            valid_urls = raw_urls[raw_urls.str.startswith('http', na=False)]
+            raw_urls = st.session_state.output_df['Link URL'].dropna().astype(str)
+            exploded_urls = raw_urls.str.split(r'[\s,]+').explode().str.strip()
+            valid_urls = exploded_urls[exploded_urls.str.startswith('http', na=False)]
             
             with c3:
                 url_counts = valid_urls.value_counts().reset_index()
-                st.plotly_chart(px.bar(url_counts.head(10), x='count', y='index', orientation='h', title="Top Exact URLs"), use_container_width=True)
-                st.download_button("📥 Download Top URLs CSV", url_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_urls.csv", "text/csv")
+                url_counts.columns = ['URL', 'Citations']
+                st.plotly_chart(px.bar(url_counts.head(10), x='Citations', y='URL', orientation='h', title="Top Exact URLs"), use_container_width=True)
+                st.download_button("📥 Download URLs", url_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_urls.csv", "text/csv")
                 
             with c4:
                 domain_counts = valid_urls.apply(get_single_domain).value_counts().reset_index()
-                st.plotly_chart(px.bar(domain_counts.head(10), x='count', y='index', orientation='h', title="Top Domains"), use_container_width=True)
-                st.download_button("📥 Download Top Domains CSV", domain_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_domains.csv", "text/csv")
+                domain_counts.columns = ['Domain', 'Citations']
+                st.plotly_chart(px.bar(domain_counts.head(10), x='Citations', y='Domain', orientation='h', title="Top Domains"), use_container_width=True)
+                st.download_button("📥 Download Domains", domain_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_domains.csv", "text/csv")
 
             st.divider()
             st.dataframe(st.session_state.output_df)
-            st.download_button("📥 Download Master Audited CSV", st.session_state.output_df.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_master_audit.csv", "text/csv")
+            st.download_button("📥 Download Master CSV", st.session_state.output_df.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_master_audit.csv", "text/csv")
 
 elif uploaded_file and not client_name:
     st.warning("Please enter a Client Name.")

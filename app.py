@@ -73,8 +73,8 @@ def suggest_tags(df_sample, target_client, comp_list):
         return "Error generating suggestions."
 
 # 3. AI Processing Function
-def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
-    """Extracts sentiment and attributes with reinforced strictness for long lists."""
+def analyze_response(text, target_client, comp_list, pref_tags, max_attrs, mentions_list):
+    """Extracts sentiment and attributes, using the Mentions column as a ground-truth guide."""
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
     
@@ -101,6 +101,10 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
     {tag_logic}
     If no specific attributes are mentioned, output 'N/A'.
     
+    RULES FOR EXTRACTION:
+    1. SENTIMENT: If a brand is listed as an 'Industry Leader', 'Enterprise-Grade', or 'Top Platform', treat this as POSITIVE. 
+    2. KNOWN MENTIONS: The system confirms these brands are definitely in the text: [{mentions_list}]. You MUST find them and evaluate their sentiment (look for typos).
+    
     You MUST evaluate the client and EVERY SINGLE competitor in this list. Do not skip any:
     1. Client: '{target_client}'
     2. Competitors:
@@ -118,7 +122,10 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": "You are a senior brand analyst. Extract sentiment and attributes precisely according to the format provided."},
+                {"role": "user", "content": prompt}
+            ],
             temperature=0
         )
         return response.choices[0].message.content.strip()
@@ -197,7 +204,12 @@ if uploaded_file and client_name:
                 parsed_results = []
                 
                 for i, row in enumerate(process_df['AI Overview']):
-                    raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes)
+                    # Safely extract the 'Mentions' column value for the current row
+                    mentions_val = str(process_df['Mentions'].iloc[i]) if 'Mentions' in process_df.columns else ""
+                    if pd.isna(process_df['Mentions'].iloc[i]):
+                        mentions_val = ""
+
+                    raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes, mentions_val)
                     
                     parts = [p.strip() for p in raw_output.split("|")]
                     

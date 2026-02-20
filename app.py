@@ -112,18 +112,28 @@ def get_single_domain(url):
     try: return urlparse(str(url)).netloc.replace('www.', '')
     except: return str(url)
 
+# --- Safety Net for AI Formatting Errors ---
+def clean_sentiment(raw_val):
+    """Forces messy AI outputs into one of the 5 strict sentiment categories."""
+    val = str(raw_val).strip()
+    if "Positive" in val: return "Positive"
+    if "Negative" in val: return "Negative"
+    if "Neutral" in val: return "Neutral"
+    if "Not Mentioned" in val or "N/A" in val: return "Not Mentioned"
+    return "Unknown"
+
 # --- Threaded Processing Function ---
 def process_single_row(i, row_text, mentions_val, client_name, comp_list, preferred_tags, max_attributes):
     raw_output = analyze_response(row_text, client_name, comp_list, preferred_tags, max_attributes, mentions_val)
     parts = [p.strip() for p in raw_output.split("|")]
     
     row_dict = {
-        f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown",
+        f"{client_name} Sentiment": clean_sentiment(parts[0]) if len(parts) > 0 else "Unknown",
         f"{client_name} Attributes": parts[1] if len(parts) > 1 else "N/A"
     }
     for idx, comp in enumerate(comp_list):
         base_idx = 2 + (idx * 2)
-        row_dict[f"{comp} Sentiment"] = parts[base_idx] if base_idx < len(parts) else "Unknown"
+        row_dict[f"{comp} Sentiment"] = clean_sentiment(parts[base_idx]) if base_idx < len(parts) else "Unknown"
         row_dict[f"{comp} Attributes"] = parts[base_idx + 1] if (base_idx + 1) < len(parts) else "N/A"
     return i, row_dict
 
@@ -247,6 +257,7 @@ if uploaded_file and client_name:
                     fig_urls = px.bar(url_counts, x='Citations', y='URL', orientation='h', title="Top Exact URLs")
                     fig_urls.update_layout(yaxis={'categoryorder':'total ascending'})
                     st.plotly_chart(fig_urls, use_container_width=True)
+                    st.download_button("📥 Download Top URLs CSV", url_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_top_urls.csv", "text/csv")
                 
             with c4:
                 if not valid_urls.empty:
@@ -255,7 +266,9 @@ if uploaded_file and client_name:
                     fig_domains = px.bar(domain_counts, x='Citations', y='Domain', orientation='h', title="Top Domains")
                     fig_domains.update_layout(yaxis={'categoryorder':'total ascending'})
                     st.plotly_chart(fig_domains, use_container_width=True)
+                    st.download_button("📥 Download Top Domains CSV", domain_counts.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_top_domains.csv", "text/csv")
 
+            st.divider()
             st.dataframe(st.session_state.output_df)
             st.download_button("📥 Download Master CSV", st.session_state.output_df.to_csv(index=False).encode('utf-8'), f"{client_name.lower()}_master_audit.csv", "text/csv")
 

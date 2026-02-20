@@ -3,7 +3,6 @@ import pandas as pd
 import openai
 import tldextract
 import plotly.express as px
-import time
 
 # 1. Config & Sidebar Setup
 st.set_page_config(page_title="OutSystems Brand Auditor", layout="wide")
@@ -41,7 +40,8 @@ def analyze_response(text):
     
     Response: "{text}"
     
-    Return the result in exactly this format: Sentiment | Positioning
+    Return ONLY in this exact format: Sentiment | Positioning
+    Do not include any other text, markdown, or explanation.
     """
     try:
         response = client.chat.completions.create(
@@ -76,26 +76,43 @@ if uploaded_file:
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Run Analysis
-            results = []
+            # --- UPDATED PROCESSING BLOCK (Safety Parsing) ---
+            results_sentiment = []
+            results_positioning = []
+            
             for i, row in enumerate(process_df['AI Overview']):
-                results.append(analyze_response(row))
+                raw_output = analyze_response(row)
+                
+                # Safety Parse: Ensure we always have two exact values to assign
+                if "|" in raw_output:
+                    parts = raw_output.split("|")
+                    s = parts[0].strip() if len(parts) > 0 else "Neutral"
+                    p = parts[1].strip() if len(parts) > 1 else "Unknown"
+                else:
+                    # Fallback if API returns weird formatting
+                    s, p = "Neutral", "Unknown"
+                
+                results_sentiment.append(s)
+                results_positioning.append(p)
+                
                 # Update progress
                 pct = int((i + 1) / len(process_df) * 100)
                 progress_bar.progress(pct)
                 status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
 
-            # Parse Results
-            process_df[['Sentiment', 'Positioning']] = pd.Series(results).str.split(' | ', expand=True)
+            # Assign directly to columns to avoid the pandas ValueError mismatch entirely
+            process_df['Sentiment'] = results_sentiment
+            process_df['Positioning'] = results_positioning
             process_df['Source Domain'] = process_df['Link URL'].apply(get_domain)
+            # --- END OF UPDATED BLOCK ---
 
             # --- 📊 DASHBOARD ---
             st.divider()
             
             # Row 1: Key Metrics
             m1, m2, m3 = st.columns(3)
-            pos_pct = (process_df['Sentiment'].str.contains('Positive')).mean() * 100
-            ai_pct = (process_df['Positioning'].str.contains('Agentic AI')).mean() * 100
+            pos_pct = (process_df['Sentiment'].str.contains('Positive', na=False)).mean() * 100
+            ai_pct = (process_df['Positioning'].str.contains('Agentic AI', na=False)).mean() * 100
             
             m1.metric("Positive Sentiment", f"{pos_pct:.1f}%")
             m2.metric("Agentic AI Positioning", f"{ai_pct:.1f}%")

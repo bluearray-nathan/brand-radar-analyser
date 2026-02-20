@@ -13,6 +13,10 @@ except Exception:
 st.title("🤖 AI Response Sentiment Auditor")
 st.markdown("Upload a Brand Radar export to automatically extract sentiment for your client and individual competitors.")
 
+# Initialize Session State to hold the processed data
+if 'output_df' not in st.session_state:
+    st.session_state.output_df = None
+
 # 2. Input Fields
 col1, col2 = st.columns(2)
 with col1:
@@ -22,19 +26,20 @@ with col2:
 
 # 3. AI Processing Function
 def analyze_response(text, target_client, comp_list):
-    """Extracts sentiment dynamically for the client and each competitor."""
-    # Handle empty text
+    """Extracts sentiment dynamically for the client and each competitor, accounting for name variations."""
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned"] * (1 + len(comp_list)))
     
-    # Dynamically build the prompt for however many competitors there are
     comp_prompts = "\n".join([f"    - '{c}': Positive, Neutral, Negative, or Not Mentioned?" for c in comp_list])
     format_str = " | ".join([f"ClientSentiment"] + [f"Comp{i+1}Sentiment" for i in range(len(comp_list))])
     
+    # UPDATED PROMPT: Added explicit instructions for name variations
     prompt = f"""
     Analyze the following AI-generated text. 
-    1. Check if the client '{target_client}' is mentioned. What is the sentiment towards them? (Positive, Neutral, Negative, or Not Mentioned)
-    2. Check for the following competitors and determine their individual sentiment:
+    IMPORTANT: You must recognize variations in spacing, capitalization, or common typos as the same brand (e.g., treat 'Power apps' as 'PowerApps', 'Out Systems' as 'OutSystems').
+    
+    1. Check if the client '{target_client}' (or variations of this name) is mentioned. What is the sentiment towards them? (Positive, Neutral, Negative, or Not Mentioned)
+    2. Check for the following competitors (or variations of their names) and determine their individual sentiment:
 {comp_prompts}
     
     Response text: "{text}"
@@ -60,6 +65,10 @@ uploaded_file = st.sidebar.file_uploader("Upload Brand Radar CSV", type="csv")
 st.sidebar.divider()
 sample_mode = st.sidebar.checkbox("Sample Mode (Analyze first 5 rows only)", value=True)
 
+# Clear session state if a new file is uploaded so old results don't linger
+if uploaded_file is None and st.session_state.output_df is not None:
+    st.session_state.output_df = None
+
 if uploaded_file and client_name:
     df = pd.read_csv(uploaded_file)
     
@@ -69,7 +78,6 @@ if uploaded_file and client_name:
         if st.button(f"🚀 Run Audit for {client_name}"):
             process_df = df.head(5).copy() if sample_mode else df.copy()
             
-            # Clean up the competitor list (remove extra spaces)
             comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
             
             progress_bar = st.progress(0)
@@ -81,41 +89,37 @@ if uploaded_file and client_name:
             for i, row in enumerate(process_df['AI Overview']):
                 raw_output = analyze_response(row, client_name, comp_list)
                 
-                # Dynamic Safety Parse
                 parts = [p.strip() for p in raw_output.split("|")]
-                
-                # Create a dictionary for this row's results
                 row_dict = {f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown"}
                 
-                # Map the rest of the parts to the respective competitors
                 for idx, comp in enumerate(comp_list):
                     row_dict[f"{comp} Sentiment"] = parts[idx + 1] if (idx + 1) < len(parts) else "Unknown"
                     
                 parsed_results.append(row_dict)
                 
-                # Update UI
                 pct = int((i + 1) / len(process_df) * 100)
                 progress_bar.progress(pct)
                 status_text.text(f"Analyzing row {i+1} of {len(process_df)}...")
 
-            # Combine the results with the original dataframe
             results_df = pd.DataFrame(parsed_results)
-            
-            # Reset indexes to ensure they stitch together perfectly
             base_df = process_df[['AI Overview', 'Link URL']].reset_index(drop=True)
-            output_df = pd.concat([base_df, results_df], axis=1)
-
-            st.divider()
+            
+            # Save the final merged dataframe into Streamlit's session state memory
+            st.session_state.output_df = pd.concat([base_df, results_df], axis=1)
+            
             st.success("Audit complete! Preview the data below:")
-            st.dataframe(output_df)
 
-            # Download Button
-            csv = output_df.to_csv(index=False).encode('utf-8')
+        # --- Display results from Session State ---
+        if st.session_state.output_df is not None:
+            st.divider()
+            st.dataframe(st.session_state.output_df)
+
+            csv = st.session_state.output_df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                "📥 Download CSV", 
-                csv, 
-                f"{client_name.lower().replace(' ', '_')}_competitive_audit.csv", 
-                "text/csv"
+                label="📥 Download CSV", 
+                data=csv, 
+                file_name=f"{client_name.lower().replace(' ', '_')}_competitive_audit.csv", 
+                mime="text/csv"
             )
 
 elif uploaded_file and not client_name:

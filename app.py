@@ -78,17 +78,13 @@ def analyze_response(text, target_client, comp_list, pref_tags, max_attrs, menti
     if not text or len(str(text)) < 5:
         return " | ".join(["Not Mentioned | N/A"] * (1 + len(comp_list)))
     
-    # Define formatting requirements
     format_parts = ["ClientSentiment | ClientAttributes"]
     for i in range(len(comp_list)):
         format_parts.append(f"Comp{i+1}Sentiment | Comp{i+1}Attributes")
     format_str = " | ".join(format_parts)
     
-    # Calculate expected item count (Brand Count * 2 fields each)
     expected_items = (len(comp_list) + 1) * 2
-    
     tag_logic = f"CRITICAL: You must map attributes to these Preferred Tags if they are semantically similar: [{pref_tags}]. If no preferred tags fit, create a new broad industry term." if pref_tags else "Normalize into broad industry terms."
-    
     comp_prompts = "\n".join([f"    - '{c}': Sentiment? Attributes?" for c in comp_list])
 
     prompt = f"""
@@ -204,22 +200,18 @@ if uploaded_file and client_name:
                 parsed_results = []
                 
                 for i, row in enumerate(process_df['AI Overview']):
-                    # Safely extract the 'Mentions' column value for the current row
                     mentions_val = str(process_df['Mentions'].iloc[i]) if 'Mentions' in process_df.columns else ""
                     if pd.isna(process_df['Mentions'].iloc[i]):
                         mentions_val = ""
 
                     raw_output = analyze_response(row, client_name, comp_list, preferred_tags, max_attributes, mentions_val)
-                    
                     parts = [p.strip() for p in raw_output.split("|")]
                     
-                    # Map Client Data
                     row_dict = {
                         f"{client_name} Sentiment": parts[0] if len(parts) > 0 else "Unknown",
                         f"{client_name} Attributes": parts[1] if len(parts) > 1 else "N/A"
                     }
                     
-                    # Map Competitor Data
                     for idx, comp in enumerate(comp_list):
                         base_idx = 2 + (idx * 2)
                         row_dict[f"{comp} Sentiment"] = parts[base_idx] if base_idx < len(parts) else "Unknown"
@@ -240,7 +232,9 @@ if uploaded_file and client_name:
         # --- Display Results ---
         if st.session_state.output_df is not None:
             file_country_tag = selected_country if selected_country != "All" else "all_countries"
+            comp_list = [c.strip() for c in competitors_input.split(",")] if competitors_input else []
             
+            # --- 1. Client Positioning Charts ---
             st.markdown(f"### 📊 Brand Positioning: {client_name}")
             c1, c2 = st.columns(2)
             
@@ -248,7 +242,7 @@ if uploaded_file and client_name:
                 sentiment_col = f"{client_name} Sentiment"
                 sent_counts = st.session_state.output_df[sentiment_col].value_counts().reset_index()
                 sent_counts.columns = ['Sentiment', 'Mentions']
-                fig_sent = px.bar(sent_counts, x='Sentiment', y='Mentions', title="Sentiment Distribution",
+                fig_sent = px.bar(sent_counts, x='Sentiment', y='Mentions', title=f"{client_name} Sentiment",
                                   color='Sentiment', color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
                 st.plotly_chart(fig_sent, use_container_width=True)
                 
@@ -261,10 +255,59 @@ if uploaded_file and client_name:
                 if not attr_list.empty:
                     attr_counts = attr_list.value_counts().head(10).reset_index()
                     attr_counts.columns = ['Attribute', 'Frequency']
-                    fig_attrs = px.bar(attr_counts, x='Frequency', y='Attribute', orientation='h', title="Top Attributes Identified")
+                    fig_attrs = px.bar(attr_counts, x='Frequency', y='Attribute', orientation='h', title=f"Top Attributes: {client_name}")
                     fig_attrs.update_layout(yaxis={'categoryorder':'total ascending'}) 
                     st.plotly_chart(fig_attrs, use_container_width=True)
 
+            # --- 2. NEW: Competitor Positioning Charts ---
+            if comp_list:
+                st.divider()
+                st.markdown("### 📊 Competitor Brand Positioning")
+                c_comp1, c_comp2 = st.columns(2)
+                
+                with c_comp1:
+                    comp_sent_cols = [f"{c} Sentiment" for c in comp_list]
+                    # Make sure columns exist before plotting
+                    if all(col in st.session_state.output_df.columns for col in comp_sent_cols):
+                        # Melt the dataframe from wide to long format for Plotly
+                        melted_sent = st.session_state.output_df.melt(value_vars=comp_sent_cols, var_name='Competitor', value_name='Sentiment')
+                        melted_sent['Competitor'] = melted_sent['Competitor'].str.replace(' Sentiment', '')
+                        
+                        comp_sent_counts = melted_sent.groupby(['Competitor', 'Sentiment']).size().reset_index(name='Mentions')
+                        
+                        fig_comp_sent = px.bar(comp_sent_counts, x='Competitor', y='Mentions', color='Sentiment', 
+                                               title="Competitor Sentiment Comparison", barmode='group',
+                                               color_discrete_map={'Positive':'#2ecc71', 'Neutral':'#95a5a6', 'Negative':'#e74c3c', 'Not Mentioned':'#34495e', 'Unknown':'#34495e'})
+                        st.plotly_chart(fig_comp_sent, use_container_width=True)
+
+                with c_comp2:
+                    comp_attr_data = []
+                    for c in comp_list:
+                        attr_col = f"{c} Attributes"
+                        if attr_col in st.session_state.output_df.columns:
+                            attrs = st.session_state.output_df[attr_col].dropna().astype(str)
+                            attr_list = attrs[attrs != 'N/A'].str.split(',').explode().str.strip()
+                            attr_list = attr_list[attr_list != '']
+                            for attr in attr_list:
+                                comp_attr_data.append({'Competitor': c, 'Attribute': attr})
+                                
+                    if comp_attr_data:
+                        comp_attr_df = pd.DataFrame(comp_attr_data)
+                        # Find the overall top 10 attributes across all competitors to keep the chart readable
+                        top_attrs = comp_attr_df['Attribute'].value_counts().head(10).index.tolist()
+                        filtered_attrs = comp_attr_df[comp_attr_df['Attribute'].isin(top_attrs)]
+                        
+                        attr_counts = filtered_attrs.groupby(['Attribute', 'Competitor']).size().reset_index(name='Frequency')
+                        
+                        fig_comp_attrs = px.bar(attr_counts, y='Attribute', x='Frequency', color='Competitor', 
+                                                orientation='h', title="Top Competitor Attributes (Grouped)", barmode='stack')
+                        fig_comp_attrs.update_layout(yaxis={'categoryorder':'total ascending'})
+                        st.plotly_chart(fig_comp_attrs, use_container_width=True)
+                    else:
+                        st.info("Not enough attribute data for competitors to generate a chart.")
+
+            # --- 3. Source Influence Extraction ---
+            st.divider()
             st.markdown("### 🌐 Top Influencing Sources")
             c3, c4 = st.columns(2)
             raw_urls = st.session_state.output_df['Link URL'].dropna().astype(str)
